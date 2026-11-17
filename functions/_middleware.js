@@ -108,7 +108,7 @@ form.addEventListener('submit', async event => {
   const login=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+encodeURIComponent(key), {
    method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({email:document.querySelector('#email').value,password:document.querySelector('#password').value,returnSecureToken:true})
   });
-  if(!login.ok) throw Error('Credenziali non valide');
+  
   const data=await login.json(); document.querySelector('#password').value='';
   const confirm=await fetch('/__pc/session',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',credentials:'same-origin',body:JSON.stringify({idToken:data.idToken})});
   if(!confirm.ok) throw Error(confirm.status===403?'Utente non autorizzato':'Verifica non riuscita');
@@ -119,6 +119,12 @@ form.addEventListener('submit', async event => {
     'Content-Type':'text/html; charset=utf-8',
     'Content-Security-Policy': `default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; script-src 'self' 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self' https://identitytoolkit.googleapis.com`
   }) });
+}
+
+if (!login.ok) {
+  const error = await login.json().catch(() => ({}));
+  const code = error.error?.message || 'ERRORE_SCONOSCIUTO';
+  throw Error(`Firebase HTTP ${login.status}: ${code}`);
 }
 
 export async function onRequest(context) {
