@@ -121,12 +121,6 @@ form.addEventListener('submit', async event => {
   }) });
 }
 
-if (!login.ok) {
-  const error = await login.json().catch(() => ({}));
-  const code = error.error?.message || 'ERRORE_SCONOSCIUTO';
-  throw Error(`Firebase HTTP ${login.status}: ${code}`);
-}
-
 export async function onRequest(context) {
   const {request, env} = context;
   const url = new URL(request.url);
