@@ -30,3 +30,10 @@ SOFTWARE.
 Cartografia: Shebuka, https://github.com/the-hideout/tarkov-dev-svg-maps/.
 Immagini remote da assets.tarkov.dev; non incluse né redistribuite nel pacchetto.
 La cartografia mantiene i propri termini di licenza, distinti dalla MIT del codice.
+
+Cartografia locale facoltativa docs/map01.svg:
+Opera originale "Interchange.svg" di Shebuka / the-hideout/tarkov-dev-svg-maps,
+https://github.com/the-hideout/tarkov-dev-svg-maps/blob/main/Interchange.svg
+Licenza CC BY-NC-SA 4.0: https://creativecommons.org/licenses/by-nc-sa/4.0/
+La distribuzione del file SVG deve rispettare attribuzione, uso non commerciale
+e condivisione allo stesso modo. La licenza della cartografia non e' la MIT.
