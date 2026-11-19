@@ -1,6 +1,25 @@
 import {layout,project,unproject,bounds,guidance,floorFor,labels,zoneFor,centeredView} from './layout.mjs';
 const $=id=>document.getElementById(id),svg=$('scene'),tiles=$('tiles'),markers=$('markers'),ns='http://www.w3.org/2000/svg';
 let fix=null,target=null,view=[...bounds],session=null,timer=null,mode='none',generation=0,busy=false;
+// v1.2: the first valid position opens a detailed view; subsequent updates keep the chosen zoom.
+let autoZoomPending=true;
+const AUTO_ZOOM_RATIO=0.48;
+function clamp(v,min,max){return Math.min(max,Math.max(min,v));}
+function constrainView(candidate){
+  const [x,y,w,h]=candidate;
+  // A small overscroll preserves visibility near the boundary without losing the map.
+  function limit(start,size,origin,extent){
+    const allowance=size*0.12, low=origin-allowance, high=origin+extent-size+allowance;
+    return low<=high?clamp(start,low,high):origin+(extent-size)/2;
+  }
+  return [limit(x,w,bounds[0],bounds[2]),limit(y,h,bounds[1],bounds[3]),w,h];
+}
+function mapUnitPerPixel(){
+  const rect=svg.getBoundingClientRect();
+  // The SVG defaults to preserveAspectRatio="xMidYMid meet".
+  return Math.max(view[2]/Math.max(1,rect.width),view[3]/Math.max(1,rect.height));
+}
+
 function element(name,attrs,parent){const el=document.createElementNS(ns,name);for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);parent.append(el);return el;}
 const zoom=3,scale=2**zoom,sz=256/scale;
 for(let x=Math.max(0,Math.floor(bounds[0]/sz));x<=Math.min(scale-1,Math.floor((bounds[0]+bounds[2])/sz));x++)for(let y=Math.max(0,Math.floor(bounds[1]/sz));y<=Math.min(scale-1,Math.floor((bounds[1]+bounds[3])/sz));y++)element('image',{x:x*sz,y:y*sz,width:sz,height:sz,href:`${layout.tile}/${zoom}/${x}/${y}.png`},tiles);
@@ -8,19 +27,57 @@ let currentFloor='',floorImages=null,artLoading=false;
 async function loadArt(){if(artLoading||floorImages)return;artLoading=true;try{let source;for(const url of ['./map01.svg',layout.svg,'https://raw.githubusercontent.com/the-hideout/tarkov-dev-svg-maps/main/Interchange.svg']){try{const response=await fetch(url,{signal:AbortSignal.timeout(8000)});if(response.ok){source=await response.text();break;}}catch{}}if(!source)throw Error('Download SVG non riuscito');const doc=new DOMParser().parseFromString(source,'image/svg+xml');const root=doc.documentElement;if(root.localName!=='svg')throw Error('SVG non valido');const names=['Ground_Level','First_Floor','Second_Floor'];if(!names.every(n=>doc.getElementById(n)))throw Error('Livelli SVG non disponibili');floorImages={};for(const name of names){const copy=root.cloneNode(true);for(const n of names){const g=copy.querySelector('[id="'+n+'"]');g.style.display=n==='Ground_Level'||n===name?'inline':'none';}const blob=new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'});floorImages[name]=URL.createObjectURL(blob);}currentFloor='';redraw();}catch(e){$('artstatus').textContent='Cartografia vettoriale non disponibile: vista principale raster. '+e.message;}finally{artLoading=false;}}
 function updateFloor(){const chosen=$('floor').value;const f=chosen==='auto'?(fix?floorFor(fix):'Ground_Level'):chosen;if(currentFloor===f)return;currentFloor=f;$('floorart').replaceChildren();$('labels').replaceChildren();if(floorImages){tiles.style.display='none';element('image',{x:bounds[0],y:bounds[1],width:bounds[2],height:bounds[3],preserveAspectRatio:'none',href:floorImages[f]},$('floorart'));$('artstatus').textContent='Livello: '+({Ground_Level:'esterno / parcheggio',First_Floor:'centro commerciale',Second_Floor:'piano superiore'}[f]);}else{tiles.style.display='';$('artstatus').textContent=f==='Ground_Level'?'Vista raster principale':'Vista raster principale: il livello richiesto attende la cartografia SVG.';}for(const label of labels.filter(l=>l.floor===f)){const [x,y]=project(label.x,label.z);const t=element('text',{x,y,fill:'#f4f6f2','font-size':3.5,'text-anchor':'middle',stroke:'#182023','stroke-width':.5,'paint-order':'stroke'},$('labels'));t.textContent=label.name;}}
 $('floor').onchange=()=>redraw();for(const [i,l] of labels.entries()){const o=document.createElement('option');o.value=String(i);o.textContent=l.name;$('destination').append(o);}$('destination').onchange=()=>{const l=labels[Number($('destination').value)];if($('destination').value!==''&&l){target={x:l.x,z:l.z};}else target=null;redraw();};
-function followFix(){if(fix&&$('follow').checked&&zoneFor(fix).name!=='Fuori area')view=centeredView(view,fix);}
-$('follow').onchange=()=>{if($('follow').checked){followFix();redraw();}};
-function redraw(){updateFloor();svg.setAttribute('viewBox',view.join(' '));markers.replaceChildren();const valid=fix&&[fix.x,fix.y,fix.z,fix.yaw,fix.timestamp].every(Number.isFinite);const p=valid?project(fix.x,fix.z):null;const inside=p&&p[0]>=bounds[0]&&p[0]<=bounds[0]+bounds[2]&&p[1]>=bounds[1]&&p[1]<=bounds[1]+bounds[3];let k=view[2]/35;const zone=valid?zoneFor(fix):null;$('zone').textContent=zone?'Zona: '+zone.name+(zone.estimated?' (stima per prossimità)':''):'Zona: in attesa di posizione';
-if(target){const t=project(target.x,target.z);element('circle',{cx:t[0],cy:t[1],r:k*.7,fill:'#55da90',stroke:'white','stroke-width':k*.13},markers);if(inside)element('line',{x1:p[0],y1:p[1],x2:t[0],y2:t[1],stroke:'#f6cc75','stroke-width':k*.22,'stroke-dasharray':`${k*.8} ${k*.4}`},markers);}
-if(inside){const [x,y]=p,angle=(fix.yaw+180)%360;const g=element('g',{transform:`translate(${x} ${y}) rotate(${angle}) scale(0.65)`,opacity:Date.now()-fix.timestamp>45000?.5:1},markers);element('path',{d:`M 0 ${-k*1.4} L ${k*.8} ${k} L 0 ${k*.55} L ${-k*.8} ${k} Z`,fill:'#5fc5ff',stroke:'white','stroke-width':k*.14},g);}
+function followFix(){
+  if(!fix||!$('follow').checked||zoneFor(fix).name==='Fuori area')return;
+  if(autoZoomPending){
+    view=[view[0],view[1],bounds[2]*AUTO_ZOOM_RATIO,bounds[3]*AUTO_ZOOM_RATIO];
+    autoZoomPending=false;
+  }
+  view=constrainView(centeredView(view,fix));
+}
+$('follow').onchange=()=>{if($('follow').checked){autoZoomPending=false;followFix();redraw();}};
+function redraw(){updateFloor();svg.setAttribute('viewBox',view.join(' '));markers.replaceChildren();const valid=fix&&[fix.x,fix.y,fix.z,fix.yaw,fix.timestamp].every(Number.isFinite);const p=valid?project(fix.x,fix.z):null;const inside=p&&p[0]>=bounds[0]&&p[0]<=bounds[0]+bounds[2]&&p[1]>=bounds[1]&&p[1]<=bounds[1]+bounds[3];const zone=valid?zoneFor(fix):null;$('zone').textContent=zone?'Zona: '+zone.name+(zone.estimated?' (stima per prossimità)':''):'Zona: in attesa di posizione';
+const u=mapUnitPerPixel(); // map units corresponding to a CSS pixel at the current zoom
+if(target){
+  const t=project(target.x,target.z);
+  if(inside)element('line',{x1:p[0],y1:p[1],x2:t[0],y2:t[1],stroke:'#ffdd81','stroke-width':2.5*u,'stroke-dasharray':`${7*u} ${5*u}`,'stroke-linecap':'round'},markers);
+  element('circle',{cx:t[0],cy:t[1],r:10*u,fill:'#38d991','fill-opacity':.85,stroke:'#ffffff','stroke-width':2*u},markers);
+  element('circle',{cx:t[0],cy:t[1],r:2.8*u,fill:'#0f2c25'},markers);
+}
+if(inside){
+  const [x,y]=p,angle=(fix.yaw+180)%360;
+  const stale=Date.now()-fix.timestamp>45000;
+  const g=element('g',{transform:`translate(${x} ${y}) rotate(${angle}) scale(${u})`,opacity:stale?.67:1},markers);
+  element('circle',{cx:0,cy:0,r:21,fill:'#52ccff','fill-opacity':.19},g);
+  element('circle',{cx:0,cy:0,r:15,fill:'#12303b',stroke:'#ffffff','stroke-width':2.5},g);
+  element('path',{d:'M 0 -16 L 10 11 L 0 6 L -10 11 Z',fill:'#53d2ff',stroke:'#092b41','stroke-width':1.7,'stroke-linejoin':'round'},g);
+  element('circle',{cx:0,cy:1,r:2.4,fill:'#ffffff'},g);
+}
 $('coords').textContent=valid?`X ${fix.x.toFixed(2)} · Y ${fix.y.toFixed(2)} · Z ${fix.z.toFixed(2)} · ${Math.round(fix.yaw)}° · ${new Date(fix.timestamp).toLocaleTimeString('it-IT')}${inside?'':' · Fuori dai limiti di Interchange'}`:'';
 if(inside&&target){const {distance,turn}=guidance(fix,target);$('guide').textContent=`${Math.round(distance)} m in linea d’aria · ${Math.abs(turn)<3?'Prosegui diritto':`Ruota ${Math.round(Math.abs(turn))}° a ${turn>0?'destra':'sinistra'}`}`;}else $('guide').textContent=target?'Meta impostata; in attesa di posizione valida.':'Tocca la mappa per impostare una destinazione.';
 }
 function point(e){const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;return p.matrixTransform(svg.getScreenCTM().inverse());}
-let drag=null;svg.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,view:[...view],start:point(e),moved:false};svg.setPointerCapture(e.pointerId)});svg.addEventListener('pointermove',e=>{if(!drag)return;if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>6)drag.moved=true;if(drag.moved){$('follow').checked=false;const ct=svg.getScreenCTM(),dx=(e.clientX-drag.x)/ct.a,dy=(e.clientY-drag.y)/ct.d;view=[drag.view[0]-dx,drag.view[1]-dy,drag.view[2],drag.view[3]];redraw()}});svg.addEventListener('pointerup',e=>{if(drag&&!drag.moved){const p=point(e);if(p.x>=bounds[0]&&p.x<=bounds[0]+bounds[2]&&p.y>=bounds[1]&&p.y<=bounds[1]+bounds[3]){const [x,z]=unproject(p.x,p.y);target={x,z};$('destination').value='';}}drag=null;redraw()});svg.addEventListener('pointercancel',()=>drag=null);
-function resize(f){const w=view[2]*f;if(w<bounds[2]/8||w>bounds[2]*2)return;view=[view[0]+(view[2]-w)/2,view[1]+view[3]*(1-f)/2,w,view[3]*f];redraw();}$('plus').onclick=()=>resize(.7);$('minus').onclick=()=>resize(1/.7);$('center').onclick=()=>{if(fix&&zoneFor(fix).name!=='Fuori area')view=centeredView(view,fix);else view=[...bounds];redraw()};$('clear').onclick=()=>{target=null;$('destination').value='';redraw()};
-const config=window.PEGASUS_CONFIG;function stop(){generation++;if(timer)clearInterval(timer);timer=null;session=null;fix=null;mode='none';busy=false;view=[...bounds];$('logout').disabled=true;redraw();}$('logout').onclick=()=>{stop();if(location.hostname.endsWith('.pages.dev')){location.assign('/__pc/logout');}else{$('status').textContent='Disconnesso';}};
+let drag=null;svg.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,view:[...view],start:point(e),moved:false};svg.setPointerCapture(e.pointerId)});svg.addEventListener('pointermove',e=>{if(!drag)return;if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>6)drag.moved=true;if(drag.moved){$('follow').checked=false;const ct=svg.getScreenCTM(),dx=(e.clientX-drag.x)/ct.a,dy=(e.clientY-drag.y)/ct.d;view=constrainView([drag.view[0]-dx,drag.view[1]-dy,drag.view[2],drag.view[3]]);redraw()}});svg.addEventListener('pointerup',e=>{if(drag&&!drag.moved){const p=point(e);if(p.x>=bounds[0]&&p.x<=bounds[0]+bounds[2]&&p.y>=bounds[1]&&p.y<=bounds[1]+bounds[3]){const [x,z]=unproject(p.x,p.y);target={x,z};$('destination').value='';}}drag=null;redraw()});svg.addEventListener('pointercancel',()=>drag=null);
+function resize(f){
+  const w=view[2]*f;
+  if(w<bounds[2]/9||w>bounds[2]*1.15)return;
+  view=constrainView([view[0]+(view[2]-w)/2,view[1]+view[3]*(1-f)/2,w,view[3]*f]);
+  autoZoomPending=false;redraw();
+}
+$('plus').onclick=()=>resize(.7);
+$('minus').onclick=()=>resize(1/.7);
+$('center').onclick=()=>{
+  if(fix&&zoneFor(fix).name!=='Fuori area'){
+    $('follow').checked=true;autoZoomPending=false;followFix();
+  }else{view=[...bounds];}
+  redraw();
+};
+$('overview').onclick=()=>{
+  $('follow').checked=false;autoZoomPending=false;view=[...bounds];redraw();
+};
+$('clear').onclick=()=>{target=null;$('destination').value='';redraw()};
+const config=window.PEGASUS_CONFIG;function stop(){generation++;if(timer)clearInterval(timer);timer=null;session=null;fix=null;mode='none';busy=false;autoZoomPending=true;view=[...bounds];$('logout').disabled=true;redraw();}$('logout').onclick=()=>{stop();if(location.hostname.endsWith('.pages.dev')){location.assign('/__pc/logout');}else{$('status').textContent='Disconnesso';}};
 async function request(url,opt={}){const r=await fetch(url,{...opt,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10000)});if(!r.ok){const data=await r.json().catch(()=>({}));const msg=data.error?.message||data.error||'Errore sconosciuto';throw Error(`HTTP ${r.status} - ${msg}`);}return r.json();}
 async function poll(g){if(g!==generation||busy||!session)return;busy=true;const s=session;try{if(Date.now()>s.expires){const r=await request(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(config.apiKey)}`,{method:'POST',body:new URLSearchParams({grant_type:'refresh_token',refresh_token:s.refresh})});if(g!==generation)return;s.token=r.id_token;s.refresh=r.refresh_token;s.expires=Date.now()+Number(r.expires_in)*1000-60000;}const value=await request(`${s.origin}/users/${encodeURIComponent(s.uid)}/latest.json?auth=${encodeURIComponent(s.token)}`);if(g!==generation)return;const previous=fix?.timestamp;fix=value?.layout==='01'&&[value.x,value.y,value.z,value.yaw,value.timestamp].every(Number.isFinite)?value:null;if(fix&&fix.timestamp!==previous)followFix();const age=fix?Math.max(0,Math.floor((Date.now()-fix.timestamp)/1000)):0;$('status').textContent=fix?`Connesso · ultima posizione ${age} s fa${age>45?' (non aggiornata)':''}`:'Connesso · in attesa di screenshot';redraw();}catch(e){if(g===generation){$('status').textContent='Errore di sincronizzazione: '+e.message;}}finally{if(g===generation)busy=false;}}
 $('login').onsubmit=async e=>{e.preventDefault();stop();const g=generation;try{const db=new URL(config.databaseURL);if(db.protocol!=='https:'||!/(\.firebaseio\.com|\.firebasedatabase\.app)$/.test(db.hostname)||db.pathname!=='/'||db.search||db.hash||db.username||db.password||db.port||config.apiKey.startsWith('INSERISCI'))throw Error('Configura Firebase in docs/config.js');$('status').textContent='Accesso…';const r=await request(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(config.apiKey)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('email').value,password:$('password').value,returnSecureToken:true})});if(g!==generation)return;session={uid:r.localId,token:r.idToken,refresh:r.refreshToken,expires:Date.now()+Number(r.expiresIn)*1000-60000,origin:db.origin};mode='cloud';$('logout').disabled=false;await poll(g);if(g===generation)timer=setInterval(()=>poll(g),2500);}catch(err){if(g===generation)$('status').textContent='Accesso non riuscito: '+err.message;}finally{$('password').value='';}};
-$('demo').onclick=()=>{if(mode!=='demo')stop();mode='demo';const label=labels.find(l=>l.name===$('demoPlace').value);fix={layout:'01',x:label.x,y:label.floor==='Ground_Level'?20:label.floor==='First_Floor'?28:35,z:label.z,yaw:40,timestamp:Date.now()};followFix();$('status').textContent='DEMO · posizione simulata, nessun dato del gioco';$('logout').disabled=false;redraw();};redraw();loadArt();
+$('demo').onclick=()=>{if(mode!=='demo')stop();mode='demo';$('follow').checked=true;const label=labels.find(l=>l.name===$('demoPlace').value);fix={layout:'01',x:label.x,y:label.floor==='Ground_Level'?20:label.floor==='First_Floor'?28:35,z:label.z,yaw:40,timestamp:Date.now()};followFix();$('status').textContent='DEMO · posizione simulata, nessun dato del gioco';$('logout').disabled=false;redraw();};redraw();loadArt();
